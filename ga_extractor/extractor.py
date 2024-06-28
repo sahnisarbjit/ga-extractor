@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from enum import Enum
 from typing import Optional, NamedTuple
+from urllib.parse import urlparse
 
 extractor = typer.Typer()
 APP_NAME = "ga-extractor"
@@ -55,8 +56,8 @@ class Preset(str, Enum):
     def dims(p):
         dims_mapping = {
             Preset.NONE: [],
-            Preset.FULL: ["ga:pagePath", "ga:browser", "ga:operatingSystem", "ga:deviceCategory", "ga:browserSize",
-                          "ga:language", "ga:country", "ga:fullReferrer"],
+            Preset.FULL: ["ga:pagePath", "ga:pageTitle", "ga:browser", "ga:operatingSystem", "ga:deviceCategory", "ga:browserSize",
+                          "ga:dateHourMinute", "ga:countryIsoCode", "ga:fullReferrer"],
             Preset.BASIC: ["ga:pagePath"],
         }
         return dims_mapping[p]
@@ -181,7 +182,7 @@ def extract(report: Optional[Path] = typer.Option("report.json", dir_okay=True))
 
 @extractor.command()
 def migrate(output_format: OutputFormat = typer.Option(OutputFormat.JSON, "--format"),
-            umami_website_id: int = typer.Argument(1, help="Website ID, used if migrating data for Umami Analytics"),
+            umami_website_id: uuid.UUID = typer.Argument(uuid.uuid4(), help="Website UUID, used if migrating data for Umami Analytics"),
             umami_hostname: str = typer.Argument("localhost", help="Hostname website being migrated, used if migrating data for Umami Analytics")):
     """
     Export necessary data and transform it to format for target environment (Umami, ...)
@@ -212,6 +213,9 @@ def migrate(output_format: OutputFormat = typer.Option(OutputFormat.JSON, "--for
             with output_path.open(mode="w") as f:
                 for insert in data:
                     f.write(f"{insert}\n")
+                f.write(
+                    f"UPDATE website SET reset_at = '{config['startDate']} 00:00:00.000+00', created_at = '{config['startDate']} 00:00:00.000+00' WHERE website_id = '{umami_website_id}';\n"
+                )
         elif output_format == OutputFormat.JSON:
             output_path.write_text(json.dumps(rows))
         elif output_format == OutputFormat.CSV:
@@ -233,7 +237,7 @@ def __migrate_date_ranges(start_date, end_date):
 
 
 def __migrate_extract(credentials, table_id, date_ranges):
-    dimensions = ["ga:pagePath", "ga:browser", "ga:operatingSystem", "ga:deviceCategory", "ga:browserSize", "ga:language", "ga:country", "ga:fullReferrer"]
+    dimensions = ["ga:pagePath", "ga:pageTitle", "ga:browser", "ga:operatingSystem", "ga:deviceCategory", "ga:browserSize", "ga:dateHourMinute", "ga:countryIsoCode", "ga:fullReferrer"]
     metrics = ["ga:pageviews", "ga:sessions"]
 
     body = {"reportRequests": [
@@ -256,41 +260,49 @@ def __migrate_extract(credentials, table_id, date_ranges):
 
 
 class Session(NamedTuple):
-    session_id: int
-    session_uuid: uuid.UUID
-    website_id: int
+    session_id: uuid.UUID
+    website_id: uuid.UUID
     created_at: str
     hostname: str
     browser: str
     os: str
     device: str
     screen: str
-    language: str
+    country: str
 
     def sql(self):
         session_insert = (
-            f"INSERT INTO public.session (session_id, session_uuid, website_id, created_at, hostname, browser, os, device, screen, language, country) "
-            f"VALUES ({self.session_id}, '{self.session_uuid}', {self.website_id}, '{self.created_at}', '{self.hostname}', '{self.browser[:20]}', '{self.os}', '{self.device}', '{self.screen}', '{self.language}', NULL);"
+            f"INSERT INTO public.session (session_id, website_id, created_at, hostname, browser, os, device, screen, country) "
+            f"VALUES ('{self.session_id}', '{self.website_id}', '{self.created_at}', '{self.hostname[:100]}', '{self.browser[:20]}', '{self.os[:20]}', '{self.device[:20]}', '{self.screen[:10]}', '{self.country}');"
         )
         return session_insert
 
 
-class PageView(NamedTuple):
-    id: int
-    website_id: int
-    session_id: int
+class WebsiteEvent(NamedTuple):
+    id: uuid.UUID
+    website_id: uuid.UUID
+    session_id: uuid.UUID
     created_at: str
     url: str
-    referral_path: str
+    title: str
+    referrer: str
 
     def sql(self):
-        return f"INSERT INTO public.pageview (view_id, website_id, session_id, created_at, url, referrer) VALUES ({self.id}, {self.website_id}, {self.session_id}, '{self.created_at}', '{self.url}', '{self.referral_path}');"
+        url_data = urlparse(self.url)
+        referrer_data = urlparse(self.referrer)
+
+        session_insert = (
+            f"INSERT INTO public.website_event (event_id, website_id, session_id, created_at, url_path, url_query, referrer_path, referrer_query, referrer_domain, page_title, event_name, visit_id) "
+            f"VALUES ('{self.id}', '{self.website_id}', '{self.session_id}', '{self.created_at}', '{url_data.path[:500]}', '{url_data.query[:500]}', '{referrer_data.path[:500]}', '{referrer_data.query[:500]}', '{referrer_data.hostname[:500]}', '{self.title.replace("'", "''")[:500]}', 'pageview', '{uuid.uuid4()}');"
+        )
+
+        return session_insert
 
 
 def __migrate_transform_umami(rows,  website_id, hostname):
 
     # Sample row:
-    # {'dimensions': ['/', 'Chrome', 'Windows', 'desktop', '1350x610', 'en-us', 'India', '(direct)'], 'metrics': [{'values': ['1', '1']}]}
+    # {'dimensions': ['/', 'Chrome', 'Windows', 'desktop', '1350x610', 'en-us', 'IN', '(direct)'], 'metrics': [{'values': ['1', '1']}]}
     #
     # Notes: there can be 0 sessions in the record; there's always more or equal number of views
     #        - treat zero sessions as one
@@ -299,82 +311,92 @@ def __migrate_transform_umami(rows,  website_id, hostname):
     #           - 4, 2 - 2 sessions, 2 views each
     #           - 5, 3 - 3 sessions, 2x1 view, 1x3 views
 
-    page_view_id = 1
-    session_id = 1
     sql_inserts = []
     for day, value in rows.items():
         for row in value:
-            timestamp = f"{day} 00:00:00.000+00"  # PostgreSQL-style "timestamp with timezone"
-            referrer = f"https://{row['dimensions'][7]}"
+            referrer = f"https://{row['dimensions'][8]}"
             if not validators.url(referrer):
                 referrer = ""
             elif referrer == "google":
                 referrer = "https://google.com"
 
-            language = row["dimensions"][5][:2]
+            timestamp = __convert_ua_datetime(row["dimensions"][6])
+            country = row["dimensions"][7]
             page_views, sessions = map(int, row["metrics"][0]["values"])
             sessions = max(sessions, 1)  # in case it's zero
             if page_views == sessions:  # One page view for each session
                 for i in range(sessions):
-                    s = Session(session_uuid=uuid.uuid4(), session_id=session_id, website_id=website_id, created_at=timestamp, hostname=hostname,
-                                browser=row["dimensions"][1], os=row["dimensions"][2], device=row["dimensions"][3], screen=row["dimensions"][4],
-                                language=language)
-                    p = PageView(id=page_view_id, website_id=website_id, session_id=session_id, created_at=timestamp, url=row["dimensions"][0], referral_path=referrer)
+                    session_id = uuid.uuid4()
+                    s = Session(
+                        session_id=session_id, website_id=website_id, created_at=timestamp, hostname=hostname,
+                        browser=row["dimensions"][2], os=row["dimensions"][3], device=row["dimensions"][4],
+                        screen=row["dimensions"][5], country=country
+                    )
+                    p = WebsiteEvent(
+                        id=uuid.uuid4(), website_id=website_id, session_id=session_id, created_at=timestamp,
+                        url=row["dimensions"][0], title=row["dimensions"][1], referrer=referrer
+                    )
                     sql_inserts.extend([s.sql(), p.sql()])
-                    session_id += 1
-                    page_view_id += 1
 
             elif page_views % sessions == 0:  # Split equally
                 for i in range(sessions):
-                    s = Session(session_uuid=uuid.uuid4(), session_id=session_id, website_id=website_id, created_at=timestamp, hostname=hostname,
-                                browser=row["dimensions"][1], os=row["dimensions"][2], device=row["dimensions"][3], screen=row["dimensions"][4],
-                                language=language)
+                    session_id = uuid.uuid4()
+                    s = Session(
+                        session_id=session_id, website_id=website_id, created_at=timestamp, hostname=hostname,
+                        browser=row["dimensions"][2], os=row["dimensions"][3], device=row["dimensions"][4],
+                        screen=row["dimensions"][5], country=country
+                    )
                     sql_inserts.append(s.sql())
                     for j in range(page_views // sessions):
-                        p = PageView(id=page_view_id, website_id=website_id, session_id=session_id, created_at=timestamp, url=row["dimensions"][0], referral_path=referrer)
+                        p = WebsiteEvent(
+                            id=uuid.uuid4(), website_id=website_id, session_id=session_id, created_at=timestamp,
+                            url=row["dimensions"][0], title=row["dimensions"][1], referrer=referrer
+                        )
                         sql_inserts.append(p.sql())
-                        page_view_id += 1
-                    session_id += 1
             else:  # One page view for each, rest for the last session
+                last_session_id = None
                 for i in range(sessions):
-                    s = Session(session_uuid=uuid.uuid4(), session_id=session_id, website_id=website_id, created_at=timestamp, hostname=hostname,
-                                browser=row["dimensions"][1], os=row["dimensions"][2], device=row["dimensions"][3], screen=row["dimensions"][4],
-                                language=language)
-                    p = PageView(id=page_view_id, website_id=website_id, session_id=session_id, created_at=timestamp, url=row["dimensions"][0], referral_path=referrer)
+                    session_id = uuid.uuid4()
+                    s = Session(
+                        session_id=session_id, website_id=website_id, created_at=timestamp, hostname=hostname,
+                        browser=row["dimensions"][2], os=row["dimensions"][3], device=row["dimensions"][4],
+                        screen=row["dimensions"][5], country=country
+                    )
+                    p = WebsiteEvent(
+                        id=uuid.uuid4(), website_id=website_id, session_id=session_id, created_at=timestamp,
+                        url=row["dimensions"][0], title=row["dimensions"][1], referrer=referrer
+                    )
                     sql_inserts.extend([s.sql(), p.sql()])
-                    session_id += 1
-                    page_view_id += 1
-                last_session_id = session_id - 1
+                    last_session_id = session_id
                 for i in range(page_views - sessions):
-                    p = PageView(id=page_view_id, website_id=website_id, session_id=last_session_id, created_at=timestamp, url=row["dimensions"][0], referral_path=referrer)
-                    page_view_id += 1
+                    p = WebsiteEvent(
+                        id=uuid.uuid4(), website_id=website_id, session_id=last_session_id, created_at=timestamp,
+                        url=row["dimensions"][0], title=row["dimensions"][1], referrer=referrer
+                    )
                     sql_inserts.append(p.sql())
 
-    sql_inserts.extend([
-        f"SELECT pg_catalog.setval('public.pageview_view_id_seq', {page_view_id}, true);",
-        f"SELECT pg_catalog.setval('public.session_session_id_seq', {session_id}, true);"
-    ])
     return sql_inserts
 
 
 class CSVRow(NamedTuple):
     path: str
+    title: str
     browser: str
     os: str
     device: str
     screen: str
-    language: str
-    country: str
+    datetime: str
+    country_id: str
     referral_path: str
     count: str
     date: datetime.date
 
     @staticmethod
     def header():
-        return f"path,browser,os,device,screen,language,country,referral_path,count,date"
+        return f"path,title,browser,os,device,screen,datetime,country_id,referral_path,count"
 
     def csv(self):
-        return f"{self.path},{self.browser},{self.os},{self.device},{self.screen},{self.language},{self.country},{self.referral_path},{self.count},{self.date}"
+        return f"{self.path},{self.title},{self.browser},{self.os},{self.device},{self.screen},{self.datetime},{self.country_id},{self.referral_path},{self.count}"
 
 
 def __migrate_transform_csv(rows):
@@ -382,15 +404,20 @@ def __migrate_transform_csv(rows):
     for day, value in rows.items():
         for row in value:
             page_views, _ = map(int, row["metrics"][0]["values"])
-            row = CSVRow(path=row["dimensions"][0],
-                         browser=row["dimensions"][1],
-                         os=row["dimensions"][2],
-                         device=row["dimensions"][3],
-                         screen=row["dimensions"][4],
-                         language=row["dimensions"][5],
-                         country=row["dimensions"][6],
-                         referral_path=row["dimensions"][7],
-                         count=page_views,
-                         date=day)
+            row = CSVRow(
+                path=row["dimensions"][0],
+                title=row["dimensions"][1],
+                browser=row["dimensions"][2],
+                os=row["dimensions"][3],
+                device=row["dimensions"][4],
+                screen=row["dimensions"][5],
+                date=__convert_ua_datetime(row["dimensions"][6]),
+                country_id=row["dimensions"][7],
+                referral_path=row["dimensions"][8],
+                count=page_views
+            )
             csv_rows.append(row.csv())
     return csv_rows
+
+def __convert_ua_datetime(dt):
+    return datetime.strptime(dt, '%Y%m%d%H%M').strftime("%Y-%m-%d %H:%M:00.000+00")
