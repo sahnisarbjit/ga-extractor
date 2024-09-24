@@ -273,7 +273,7 @@ class Session(NamedTuple):
     def sql(self):
         session_insert = (
             f"INSERT INTO public.session (session_id, website_id, created_at, hostname, browser, os, device, screen, country) "
-            f"VALUES ('{self.session_id}', '{self.website_id}', '{self.created_at}', '{self.hostname[:100]}', '{self.browser[:20]}', '{self.os[:20]}', '{self.device[:20]}', '{self.screen[:10]}', '{self.country}');"
+            f"VALUES ('{self.session_id}', '{self.website_id}', '{self.created_at}', '{self.hostname[:100]}', '{_safe_db_value(self.browser, 20)}', '{_safe_db_value(self.os, 20)}', '{_safe_db_value(self.device, 20)}', '{_safe_db_value(self.screen, 10)}', '{self.country}');"
         )
         return session_insert
 
@@ -293,7 +293,7 @@ class WebsiteEvent(NamedTuple):
 
         session_insert = (
             f"INSERT INTO public.website_event (event_id, website_id, session_id, created_at, url_path, url_query, referrer_path, referrer_query, referrer_domain, page_title, event_name, visit_id) "
-            f"VALUES ('{self.id}', '{self.website_id}', '{self.session_id}', '{self.created_at}', '{url_data.path[:500]}', '{url_data.query[:500]}', '{referrer_data.path[:500]}', '{referrer_data.query[:500]}', '{referrer_data.hostname[:500]}', '{self.title.replace("'", "''")[:500]}', 'pageview', '{uuid.uuid4()}');"
+            f"VALUES ('{self.id}', '{self.website_id}', '{self.session_id}', '{self.created_at}', '{_safe_db_value(url_data.path, 500)}', '{_safe_db_value(url_data.query, 500)}', '{_safe_db_value(referrer_data.path, 500)}', '{_safe_db_value(referrer_data.query, 500)}', '{_safe_db_value(referrer_data.hostname, 500)}', '{_safe_db_value(self.title, 500)}', 'pageview', '{uuid.uuid4()}');"
         )
 
         return session_insert
@@ -320,7 +320,7 @@ def __migrate_transform_umami(rows,  website_id, hostname):
             elif referrer == "google":
                 referrer = "https://google.com"
 
-            timestamp = __convert_ua_datetime(row["dimensions"][6])
+            timestamp = _convert_ua_datetime(row["dimensions"][6])
             country = row["dimensions"][7]
             page_views, sessions = map(int, row["metrics"][0]["values"])
             sessions = max(sessions, 1)  # in case it's zero
@@ -411,7 +411,7 @@ def __migrate_transform_csv(rows):
                 os=row["dimensions"][3],
                 device=row["dimensions"][4],
                 screen=row["dimensions"][5],
-                date=__convert_ua_datetime(row["dimensions"][6]),
+                date=_convert_ua_datetime(row["dimensions"][6]),
                 country_id=row["dimensions"][7],
                 referral_path=row["dimensions"][8],
                 count=page_views
@@ -419,5 +419,8 @@ def __migrate_transform_csv(rows):
             csv_rows.append(row.csv())
     return csv_rows
 
-def __convert_ua_datetime(dt):
+def _convert_ua_datetime(dt):
     return datetime.strptime(dt, '%Y%m%d%H%M').strftime("%Y-%m-%d %H:%M:00.000+00")
+
+def _safe_db_value(str, length):
+    return str.replace("'", "''")[:length] if str else ''
