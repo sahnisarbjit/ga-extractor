@@ -81,16 +81,16 @@ class WebsiteEvent(NamedTuple):
         return insert
 
 sites = {
-    'BYM': Site(host='www.bebesymas.com', table='298125183', website_id='d90f4a57-31d4-4aa0-8ac8-238bc61d2003'),
-    'CYM': Site(host='www.cocoymaya.com', table='298125183', website_id='a0a25bf2-bfe7-4b7f-abd0-aa6aaf4ec5ac'),
-    'DDV': Site(host='www.diariodelviajero.com', table='298125183', website_id='21aaa234-a195-45b3-88a5-3e7720781248'),
-    'EBS': Site(host='www.elblogsalmon.com', table='298125183', website_id='95845666-a411-482e-b652-7631e15b9743'),
+    'BYM': Site(host='www.bebesymas.com', table='298202106', website_id='d90f4a57-31d4-4aa0-8ac8-238bc61d2003'),
+    'CYM': Site(host='www.cocoymaya.com', table='390040980', website_id='a0a25bf2-bfe7-4b7f-abd0-aa6aaf4ec5ac'),
+    'DDV': Site(host='www.diariodelviajero.com', table='298182795', website_id='21aaa234-a195-45b3-88a5-3e7720781248'),
+    'EBS': Site(host='www.elblogsalmon.com', table='298176455', website_id='95845666-a411-482e-b652-7631e15b9743'),
     'M22': Site(host='www.motorpasionmoto.com', table='298197205', website_id='d2c2f659-01d4-4b14-b05e-28efa81d4600'),
     'MOP': Site(host='www.motorpasion.com', table='298125183', website_id='1b258930-34ec-4eb6-a659-c7df374943aa'),
-    'MPX': Site(host='www.motorpasion.com.mx', table='298125183', website_id='eb820f0e-73db-45f1-9f02-ddf585cfc708'),
-    'PYM': Site(host='www.pymesyautonomos.com', table='298125183', website_id='64ae7857-00c3-46cc-9e09-adcc45465bed'),
-    'HEP': Site(host='hyundaielectricpower.motorpasion.com', table='298125183', website_id='f153dcd4-5057-4d1d-a885-a115f48b53a0'),
-    'SBYM': Site(host='guiaservicios.bebesymas.com', table='298125183', website_id='9d047a80-a5fb-4b8e-8bed-8fc9513914c3'),
+    'MPX': Site(host='www.motorpasion.com.mx', table='298203458', website_id='eb820f0e-73db-45f1-9f02-ddf585cfc708'),
+    'PYM': Site(host='www.pymesyautonomos.com', table='298182053', website_id='64ae7857-00c3-46cc-9e09-adcc45465bed'),
+    'HEP': Site(host='hyundaielectricpower.motorpasion.com', table='391524901', website_id='f153dcd4-5057-4d1d-a885-a115f48b53a0'),
+    'SBYM': Site(host='guiaservicios.bebesymas.com', table='391615704', website_id='9d047a80-a5fb-4b8e-8bed-8fc9513914c3'),
 }
 
 def _convert_ua_datetime(dt):
