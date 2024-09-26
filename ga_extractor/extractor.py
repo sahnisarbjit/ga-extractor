@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 extractor = typer.Typer()
 APP_NAME = "ga-extractor"
-
+APP_CONFIG_FILE = "config.yaml"
 
 class SamplingLevel(str, Enum):
     SAMPLING_UNSPECIFIED = "SAMPLING_UNSPECIFIED"
@@ -83,7 +83,7 @@ def setup(metrics: str = typer.Option(None, "--metrics"),
             (dimensions is None and metrics is not None) or (dimensions is not None and metrics is None)
     ):
         typer.echo("Dimensions and Metrics or Preset must be specified.")
-        typer.Exit(2)
+        raise typer.Exit(2)
 
     config = {
         "serviceAccountKeyPath": sa_key_path,
@@ -104,7 +104,7 @@ def setup(metrics: str = typer.Option(None, "--metrics"),
         typer.echo(output)
     else:
         app_dir = typer.get_app_dir(APP_NAME)
-        config_path: Path = Path(app_dir) / "config.yaml"
+        config_path: Path = Path(app_dir) / APP_CONFIG_FILE
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, 'w') as outfile:
             outfile.write(output)
@@ -116,7 +116,7 @@ def auth():
     Test authentication using generated configuration
     """
     app_dir = typer.get_app_dir(APP_NAME)
-    config_path: Path = Path(app_dir) / "config.yaml"
+    config_path: Path = Path(app_dir) / APP_CONFIG_FILE
     if not config_path.is_file():
         typer.echo("Config file doesn't exist yet. Please run 'setup' command first.")
         return
@@ -139,11 +139,11 @@ def extract(report: Optional[Path] = typer.Option("report.json", dir_okay=True))
     # https://developers.google.com/analytics/devguides/reporting/core/v4/rest/v4/reports/batchGet
 
     app_dir = typer.get_app_dir(APP_NAME)
-    config_path: Path = Path(app_dir) / "config.yaml"
+    config_path: Path = Path(app_dir) / APP_CONFIG_FILE
     output_path: Path = Path(app_dir) / report
     if not config_path.is_file():
         typer.echo("Config file doesn't exist yet. Please run 'setup' command first.")
-        typer.Exit(2)
+        raise typer.Exit(2)
     with config_path.open() as file:
         config = yaml.safe_load(file)
         credentials = service_account.Credentials.from_service_account_file(config["serviceAccountKeyPath"])
@@ -181,7 +181,7 @@ def extract(report: Optional[Path] = typer.Option("report.json", dir_okay=True))
 
 
 @extractor.command()
-def migrate(output_format: OutputFormat = typer.Option(OutputFormat.JSON, "--format"),
+def migrate(output_format: OutputFormat = typer.Option(OutputFormat.UMAMI, "--format"),
             umami_website_id: uuid.UUID = typer.Argument(uuid.uuid4(), help="Website UUID, used if migrating data for Umami Analytics"),
             umami_hostname: str = typer.Argument("localhost", help="Hostname website being migrated, used if migrating data for Umami Analytics")):
     """
@@ -195,11 +195,11 @@ def migrate(output_format: OutputFormat = typer.Option(OutputFormat.JSON, "--for
     """
 
     app_dir = typer.get_app_dir(APP_NAME)
-    config_path: Path = Path(app_dir) / "config.yaml"
-    output_path: Path = Path(app_dir) / f"{uuid.uuid4()}_extract.{OutputFormat.file_suffix(output_format)}"
+    config_path: Path = Path(app_dir) / APP_CONFIG_FILE
+    output_path: Path = Path(app_dir) / f"{umami_website_id}_extract.{OutputFormat.file_suffix(output_format)}"
     if not config_path.is_file():
         typer.echo("Config file doesn't exist yet. Please run 'setup' command first.")
-        typer.Exit(2)
+        raise typer.Exit(2)
     with config_path.open() as file:
         config = yaml.safe_load(file)
         credentials = service_account.Credentials.from_service_account_file(config["serviceAccountKeyPath"])
@@ -214,7 +214,7 @@ def migrate(output_format: OutputFormat = typer.Option(OutputFormat.JSON, "--for
                 for insert in data:
                     f.write(f"{insert}\n")
                 f.write(
-                    f"UPDATE website SET reset_at = '{config['startDate']} 00:00:00.000+00', created_at = '{config['startDate']} 00:00:00.000+00' WHERE website_id = '{umami_website_id}';\n"
+                    f"WITH r AS (SELECT TO_CHAR(created_at, 'yyyy-mm-ddT00:00:00')::date as reset_time, website_id FROM public.website_event WHERE website_id = '{umami_website_id}' ORDER BY event_id DESC LIMIT 1) UPDATE public.website SET reset_at = r.reset_time, created_at = r.reset_time FROM r WHERE public.website.website_id = r.website_id;\n"
                 )
         elif output_format == OutputFormat.JSON:
             output_path.write_text(json.dumps(rows))
@@ -299,7 +299,7 @@ class WebsiteEvent(NamedTuple):
         return session_insert
 
 
-def __migrate_transform_umami(rows,  website_id, hostname):
+def __migrate_transform_umami(rows, website_id, hostname):
 
     # Sample row:
     # {'dimensions': ['/', 'Chrome', 'Windows', 'desktop', '1350x610', 'en-us', 'IN', '(direct)'], 'metrics': [{'values': ['1', '1']}]}
